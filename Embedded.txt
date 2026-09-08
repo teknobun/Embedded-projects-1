@@ -1,0 +1,157 @@
+/*#include <LiquidCrystal.h>
+
+// LCD pins (RS:37, E:36, D4:35, D5:34, D6:33, D7:32)
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// Joystick Pin Mapping
+const int pinX = A8;   
+const int pinY = A9;   
+const int pinKey = 19; 
+
+// Calibration Offset Variables
+int centerX = 517;
+int centerY = 512;
+
+void setup() {
+  lcd.begin(20, 4);
+  pinMode(pinKey, INPUT_PULLUP);
+
+  // Auto-Calibrate Resting Center (Keep joystick still at startup)
+  centerX = analogRead(pinX);
+  centerY = analogRead(pinY);
+
+  // Print static labels
+  lcd.setCursor(0, 0);
+  lcd.print("x:");
+  lcd.setCursor(0, 1);
+  lcd.print("y:");
+}
+
+void loop() {
+  int rawX = analogRead(pinX);
+  int rawY = analogRead(pinY);
+
+  // Shift values so resting position is 0
+  int calX = rawX - centerX;
+  int calY = rawY - centerY;
+
+  // Deadzone filter: ignore slight mechanical jitter near 0
+  if (abs(calX) < 15) calX = 0;
+  if (abs(calY) < 15) calY = 0;
+
+  // Convert to percentage centered at 0% (-100% to +100%)
+  int pctX = map(calX, -517, 517, -100, 100);
+  int pctY = map(calY, -512, 512, 100, -100);
+
+  // Constrain limits to exactly -100% to +100%
+  pctX = constrain(pctX, -100, 100);
+  pctY = constrain(pctY, -100, 100);
+
+  // --- Display X-Axis (Row 0) ---
+  lcd.setCursor(2, 0);
+  lcd.print("      "); // Clear area
+  lcd.setCursor(2, 0);
+  lcd.print(calX);
+
+  lcd.setCursor(12, 0);
+  lcd.print("     "); // Clear area
+  lcd.setCursor(12, 0);
+  lcd.print(pctX);
+  lcd.print(" %");
+
+  // --- Display Y-Axis (Row 1) ---
+  lcd.setCursor(2, 1);
+  lcd.print("      "); // Clear area
+  lcd.setCursor(2, 1);
+  lcd.print(calY);
+
+  lcd.setCursor(12, 1);
+  lcd.print("     "); // Clear area
+  lcd.setCursor(12, 1);
+  lcd.print(pctY);
+  lcd.print(" %");
+
+  delay(200);
+}*/
+
+#include <LiquidCrystal.h>
+
+// LCD pins (RS:37, E:36, D4:35, D5:34, D6:33, D7:32)
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// Joystick Pin Mapping
+const int pinX = A8;   
+const int pinY = A9;   
+const int pinKey = 19; 
+
+// Calibration Offset Variables
+int centerX = 517;
+int centerY = 512;
+
+void setup() {
+  lcd.begin(20, 4);
+  pinMode(pinKey, INPUT_PULLUP);
+
+  // Auto-Calibrate Resting Center (Keep joystick still at startup)
+  centerX = analogRead(pinX);
+  centerY = analogRead(pinY);
+
+  // Print static labels
+  lcd.setCursor(0, 0);
+  lcd.print("x:");
+  lcd.setCursor(0, 1);
+  lcd.print("y:");
+}
+
+void loop() {
+  int rawX = analogRead(pinX);
+  int rawY = analogRead(pinY);
+
+  // Shift values so resting position is 0
+  int calX = rawX - centerX;
+  int calY = rawY - centerY;
+
+  int calX = rawX - centerX;
+  int calY = -(rawY - centerY);
+
+  // Deadzone filter: ignore slight mechanical jitter near 0
+  if (abs(calX) < 15) calX = 0;
+  if (abs(calY) < 15) calY = 0;
+
+  int pctX = map(calX, -centerX, 1023 - centerX, -100, 100);
+  int pctY = map(calY, -(1023 - centerY), centerY, -100, 100);
+
+  /* Convert to percentage centered at 0% (-100% to +100%)
+  int pctX = map(calX, -517, 517, -100, 100);
+  int pctY = map(calY, -512, 512, 100, -100);*/
+
+  // Constrain limits to exactly -100% to +100%
+  pctX = constrain(pctX, -100, 100);
+  pctY = constrain(pctY, -100, 100);
+
+  // --- Display X-Axis (Row 0) ---
+  lcd.setCursor(2, 0);
+  lcd.print("      "); // Clear area
+  lcd.setCursor(2, 0);
+  lcd.print(calX);
+
+  lcd.setCursor(12, 0);
+  lcd.print("     "); // Clear area
+  lcd.setCursor(12, 0);
+  lcd.print(pctX);
+  lcd.print(" %");
+
+  // --- Display Y-Axis (Row 1) ---
+  lcd.setCursor(2, 1);
+  lcd.print("      "); // Clear area
+  lcd.setCursor(2, 1);
+  lcd.print(calY);
+
+  lcd.setCursor(12, 1);
+  lcd.print("     "); // Clear area
+  lcd.setCursor(12, 1);
+  lcd.print(pctY);
+  lcd.print(" %");
+
+  delay(200);
+}
