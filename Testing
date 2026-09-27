@@ -1,0 +1,203 @@
+#include <LiquidCrystal.h>
+
+// Khai báo màn hình LCD (RS, E, D4, D5, D6, D7)
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// Khai báo chân Joystick
+const int xPin = A8;
+const int yPin = A9;
+const int buttonPin = 19; // Chân ngắt cứng (Interrupt 4)
+
+// Khai báo chân Motor Driver (Đã đảo chân theo đúng phần cứng của bạn)
+#define Motor_forward    0
+#define Motor_return     1
+#define Motor_L_dir_pin  8
+#define Motor_R_dir_pin  7
+#define Motor_L_pwm_pin  10
+#define Motor_R_pwm_pin  9
+
+// Hằng số tốc độ PWM cho Exercise 1 (0 - 255)[cite: 2]
+const int SPEED_30_PERCENT = 76;   // 255 * 0.30[cite: 2]
+const int SPEED_75_PERCENT = 191;  // 255 * 0.75[cite: 2]
+
+// Biến lưu trạng thái Joystick
+int xVal, yVal;
+int xVal2, yVal2;
+int perx, pery;
+
+// Biến cờ ngắt
+volatile bool runMotorFlag = false;
+volatile unsigned long lastTime = 0;
+
+// Hàm ngắt xử lý nút bấm Joystick (Exercise 6)[cite: 1]
+void buttonPressed() {
+  unsigned long interruptTime = millis();
+  if (interruptTime - lastTime > 250) { // Chống dội nút
+    runMotorFlag = true;
+    lastTime = interruptTime;
+  }
+}
+
+// Hàm ngắt hoàn toàn động cơ
+void stopMotors() {
+  analogWrite(Motor_L_pwm_pin, 0);
+  analogWrite(Motor_R_pwm_pin, 0);
+  digitalWrite(Motor_L_dir_pin, LOW);
+  digitalWrite(Motor_R_dir_pin, LOW);
+}
+
+// =================================================================
+// EXERCISE 1 & 6: KỊCH BẢN CHẠY MẪU (AUTOMATIC TEST RUN)[cite: 1, 2]
+// =================================================================
+void runMotorTest() {
+  // Bước 1: Bánh trái tiến 30% tốc độ (2 giây)[cite: 2]
+  digitalWrite(Motor_L_dir_pin, Motor_forward);
+  analogWrite(Motor_L_pwm_pin, SPEED_30_PERCENT);
+  analogWrite(Motor_R_pwm_pin, 0);
+  delay(2000);
+
+  stopMotors();
+  delay(150);
+
+  // Bước 2: Bánh phải tiến 30% tốc độ (1 giây)[cite: 2]
+  digitalWrite(Motor_R_dir_pin, Motor_forward);
+  analogWrite(Motor_R_pwm_pin, SPEED_30_PERCENT);
+  analogWrite(Motor_L_pwm_pin, 0);
+  delay(1000);
+
+  stopMotors();
+  delay(200);
+
+  // Bước 3: Cả 2 bánh lùi 75% tốc độ (4 giây)[cite: 2]
+  digitalWrite(Motor_L_dir_pin, Motor_return);
+  digitalWrite(Motor_R_dir_pin, Motor_return);
+  analogWrite(Motor_L_pwm_pin, SPEED_75_PERCENT);
+  analogWrite(Motor_R_pwm_pin, SPEED_75_PERCENT);
+  delay(4000);
+
+  // Bước 4: Dừng hẳn[cite: 2]
+  stopMotors();
+}
+
+// =================================================================
+// EXERCISE 2 & 3: ĐIỀU KHIỂN LÁI XE BẰNG JOYSTICK (MANUAL DRIVE)[cite: 3]
+// =================================================================
+void driveWithJoystick(int xRaw, int yRaw) {
+  // Chuyển đổi dải đọc Analog (0 - 1023) về dải tốc độ (-255 đến +255)
+  // Trục Y dùng cho Tiền / Lùi; Trục X dùng cho Rẽ Trái / Phải[cite: 3]
+  int throttle = map(yRaw, 0, 1023, -255, 255);
+  int steering = map(xRaw, 0, 1023, -255, 255);
+
+  // Áp dụng Vùng chết (Deadzone): Thả tay Joystick -> Xe đứng yên[cite: 3]
+  if (abs(throttle) < 25) throttle = 0;
+  if (abs(steering) < 25) steering = 0;
+
+  // Nếu không chạm Joystick thì ngắt điện mô-tơ[cite: 3]
+  if (throttle == 0 && steering == 0) {
+    stopMotors();
+    return;
+  }
+
+  // Thuật toán vi sai (Differential Drive) tính tốc độ từng bánh
+  int leftSpeed  = throttle + steering;
+  int rightSpeed = throttle - steering;
+
+  // Khống chế tốc độ trong dải chuẩn 8-bit (-255 đến 255)
+  leftSpeed  = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
+
+  // Điều khiển Bánh Trái
+  if (leftSpeed >= 0) {
+    digitalWrite(Motor_L_dir_pin, Motor_forward);
+    analogWrite(Motor_L_pwm_pin, leftSpeed);
+  } else {
+    digitalWrite(Motor_L_dir_pin, Motor_return);
+    analogWrite(Motor_L_pwm_pin, abs(leftSpeed));
+  }
+
+  // Điều khiển Bánh Phải
+  if (rightSpeed >= 0) {
+    digitalWrite(Motor_R_dir_pin, Motor_forward);
+    analogWrite(Motor_R_pwm_pin, rightSpeed);
+  } else {
+    digitalWrite(Motor_R_dir_pin, Motor_return);
+    analogWrite(Motor_R_pwm_pin, abs(rightSpeed));
+  }
+}
+
+void setup() {
+  lcd.begin(20, 4);
+  Serial.begin(9600);
+
+  // Cấu hình Pin
+  pinMode(xPin, INPUT);
+  pinMode(yPin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  pinMode(Motor_L_dir_pin, OUTPUT);
+  pinMode(Motor_R_dir_pin, OUTPUT);
+  pinMode(Motor_L_pwm_pin, OUTPUT);
+  pinMode(Motor_R_pwm_pin, OUTPUT);
+
+  stopMotors();
+
+  // Đăng ký ngắt phần cứng cho nút bấm[cite: 1]
+  attachInterrupt(digitalPinToInterrupt(buttonPin), buttonPressed, FALLING);
+
+  // Khung giao diện LCD tĩnh
+  lcd.setCursor(0, 0); lcd.print("x:");
+  lcd.setCursor(0, 2); lcd.print("y:");
+  lcd.setCursor(9, 0); lcd.print("xper:");
+  lcd.setCursor(9, 2); lcd.print("yper:");
+  lcd.setCursor(17, 0); lcd.print("%");
+  lcd.setCursor(17, 2); lcd.print("%");
+}
+
+void loop() {
+  // 1. Đọc tín hiệu Joystick
+  xVal = analogRead(xPin);
+  yVal = analogRead(yPin);
+  yVal = 1023 - yVal; // Đảo chiều trục Y chuẩn hướng tiến/lùi
+
+  // Calculate coordinates for LCD
+  xVal2 = xVal - 511.5;
+  yVal2 = yVal - 511.5;
+
+  if (abs(xVal2) < 10) xVal2 = 0;
+  if (abs(yVal2) < 10) yVal2 = 0;
+
+  perx = constrain((xVal / 1023.0) * 100, 0, 100);
+  pery = constrain((yVal / 1023.0) * 100, 0, 100);
+
+  // 2. Cập nhật thông số lên màn hình LCD
+  lcd.setCursor(3, 0); lcd.print("     ");
+  lcd.setCursor(3, 0); lcd.print(xVal2);
+
+  lcd.setCursor(3, 2); lcd.print("     ");
+  lcd.setCursor(3, 2); lcd.print(yVal2);
+
+  lcd.setCursor(14, 0); lcd.print("   ");
+  lcd.setCursor(14, 0); lcd.print(perx);
+
+  lcd.setCursor(14, 2); lcd.print("   ");
+  lcd.setCursor(14, 2); lcd.print(pery);
+
+  // 3. Xử lý Logic ưu tiên Chế độ chạy
+  if (runMotorFlag) {
+    // CHẾ ĐỘ 1: Thực thi bài Test tự động (Exercise 1 & 6)[cite: 1, 2]
+    lcd.setCursor(0, 1);
+    lcd.print("Testing Motor...    ");
+
+    runMotorTest(); // Gọi hàm chạy 4 bước[cite: 2]
+
+    lcd.setCursor(0, 1);
+    lcd.print("                    "); // Xóa chữ hiển thị
+
+    runMotorFlag = false; // Reset cờ ngắt
+  } else {
+    // CHẾ ĐỘ 2: Điều khiển xe trực tiếp bằng Joystick (Exercise 2 & 3)[cite: 3]
+    driveWithJoystick(xVal, yVal);
+  }
+
+  delay(20); // Thời gian lấy mẫu nhanh giúp lái xe nhạy mượt hơn
+}
