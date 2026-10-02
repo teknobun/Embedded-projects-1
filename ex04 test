@@ -1,0 +1,108 @@
+/*MODIFY LATER, THOSE CONTAIN BOTH PULSES LEFT AND RIGHT*/
+
+#include <LiquidCrystal.h>
+
+// 1. Khai báo màn hình LCD (RS, E, D4, D5, D6, D7)
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// 2. Định nghĩa chân và hằng số điều khiển Motor Driver
+#define Motor_forward    0
+#define Motor_return     1
+#define Motor_L_dir_pin  8
+#define Motor_R_dir_pin  7
+#define Motor_L_pwm_pin  10
+#define Motor_R_pwm_pin  9
+
+// 3. Khai báo chân Encoder (Sử dụng ngắt phần cứng trên Arduino Mega)
+const int encoderPinL = 2; // ENCA Trái (Interrupt 0)
+const int encoderPinR = 3; // ENCA Phải (Interrupt 1)
+
+// Biến đếm xung (bắt buộc dùng từ khóa volatile cho ngắt ISR)
+volatile unsigned long pulseCountL = 0;
+volatile unsigned long pulseCountR = 0;
+
+// Hệ số bù tốc độ bánh trái (vì bánh trái chạy nhanh hơn làm xe lệch sang phải)
+// Bạn có thể tinh chỉnh con số 0.92 này (ví dụ 0.90 - 0.95) đến khi xe đi thẳng hẳn
+const float leftMotorFactor = 0.92; 
+const int baseSpeed = 150; // Mức PWM tốc độ cơ bản (0 - 255)
+
+// 4. Các hàm ngắt phần cứng ISR (Tự động đếm xung ở nền phần cứng)
+void ISR_countPulseL() {
+  pulseCountL++;
+}
+
+void ISR_countPulseR() {
+  pulseCountR++;
+}
+
+// 5. Hàm ngắt điện dừng hoàn toàn 2 động cơ
+void stopMotors() {
+  analogWrite(Motor_L_pwm_pin, 0);
+  analogWrite(Motor_R_pwm_pin, 0);
+  digitalWrite(Motor_L_dir_pin, LOW);
+  digitalWrite(Motor_R_dir_pin, LOW);
+}
+
+void setup() {
+  // Khởi tạo LCD 20 cột, 4 dòng
+  lcd.begin(20, 4);
+
+  // Cấu hình chân Output điều khiển Motor Driver
+  pinMode(Motor_L_dir_pin, OUTPUT);
+  pinMode(Motor_R_dir_pin, OUTPUT);
+  pinMode(Motor_L_pwm_pin, OUTPUT);
+  pinMode(Motor_R_pwm_pin, OUTPUT);
+
+  // Cấu hình chân Input Encoder với điện trở kéo lên nội bộ
+  pinMode(encoderPinL, INPUT_PULLUP);
+  pinMode(encoderPinR, INPUT_PULLUP);
+
+  // Đăng ký ngắt phần cứng cho 2 chân Encoder
+  attachInterrupt(digitalPinToInterrupt(encoderPinL), ISR_countPulseL, RISING);
+  attachInterrupt(digitalPinToInterrupt(encoderPinR), ISR_countPulseR, RISING);
+
+  // Giao diện thông báo chuẩn bị
+  lcd.setCursor(0, 0);
+  lcd.print("Ex 4: Calibration");
+  lcd.setCursor(0, 1);
+  lcd.print("Running 4 seconds...");
+  delay(1500);
+
+  // Reset đếm xung về 0 trước khi xe lăn bánh
+  pulseCountL = 0;
+  pulseCountR = 0;
+
+  // Cấu hình hướng chạy TIẾN cho 2 bánh
+  digitalWrite(Motor_L_dir_pin, Motor_forward);
+  digitalWrite(Motor_R_dir_pin, Motor_forward);
+
+  // Cấp xung PWM (Bánh trái đã áp dụng hệ số bù để chống lệch phải)
+  analogWrite(Motor_L_pwm_pin, (int)(baseSpeed * leftMotorFactor));
+  analogWrite(Motor_R_pwm_pin, baseSpeed);
+
+  // Cho xe chạy đúng 4 giây (4000 ms)
+  delay(4000);
+
+  // Ngắt điện dừng xe lập tức
+  stopMotors();
+
+  // Hiển thị kết quả đo xung lên màn hình LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("--- EX 4 RESULTS ---");
+  
+  lcd.setCursor(0, 1);
+  lcd.print("Pulses L: ");
+  lcd.print(pulseCountL);
+
+  lcd.setCursor(0, 2);
+  lcd.print("Pulses R: ");
+  lcd.print(pulseCountR);
+
+  lcd.setCursor(0, 3);
+  lcd.print("Measure cm on floor!");
+}
+
+void loop() {
+  // Giữ nguyên trạng thái để người dùng đọc thông số trên LCD và đo thước dây dưới sàn
+}
