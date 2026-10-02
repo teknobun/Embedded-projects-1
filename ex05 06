@@ -1,0 +1,115 @@
+#include <LiquidCrystal.h>
+
+// 1. LCD Configuration (RS, E, D4, D5, D6, D7)
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// 2. Motor Driver Pin Definitions
+#define Motor_forward    0
+#define Motor_return     1
+#define Motor_L_dir_pin  8
+#define Motor_R_dir_pin  7
+#define Motor_L_pwm_pin  10
+#define Motor_R_pwm_pin  9
+
+// 3. Encoder Pin Definitions
+const int encoderPinL = 2; // ENCA Left (Interrupt 0)
+const int encoderPinR = 3; // ENCA Right (Interrupt 1)
+
+// Interrupt Variables
+volatile unsigned long pulseCountL = 0;
+volatile unsigned long pulseCountR = 0;
+
+// 4. CALIBRATION & COMPETITION SETTINGS
+const float PULSES_PER_CM = 13.97; // Số xung/cm thực tế của xe bạn
+
+const int baseSpeed = 150; 
+// NẾU XE VẪN RẼ PHẢI: Hãy hạ số này xuống 0.88 hoặc 0.85
+// NẾU XE BỊ RẼ TRÁI: Hãy tăng số này lên 0.95
+const float leftMotorFactor = 0.88; 
+
+float targetDistanceCm = 30.0; // Khoảng cách thử nghiệm 10 cm
+
+// Interrupt Service Routines (ISRs)
+void ISR_countPulseL() {
+  pulseCountL++;
+}
+
+void ISR_countPulseR() {
+  pulseCountR++;
+}
+
+void stopMotors() {
+  analogWrite(Motor_L_pwm_pin, 0);
+  analogWrite(Motor_R_pwm_pin, 0);
+  digitalWrite(Motor_L_dir_pin, LOW);
+  digitalWrite(Motor_R_dir_pin, LOW);
+}
+
+void setup() {
+  lcd.begin(20, 4);
+
+  pinMode(Motor_L_dir_pin, OUTPUT);
+  pinMode(Motor_R_dir_pin, OUTPUT);
+  pinMode(Motor_L_pwm_pin, OUTPUT);
+  pinMode(Motor_R_pwm_pin, OUTPUT);
+
+  pinMode(encoderPinL, INPUT_PULLUP);
+  pinMode(encoderPinR, INPUT_PULLUP);
+
+  attachInterrupt(digitalPinToInterrupt(encoderPinL), ISR_countPulseL, RISING);
+  attachInterrupt(digitalPinToInterrupt(encoderPinR), ISR_countPulseR, RISING);
+
+  lcd.setCursor(0, 0);
+  lcd.print("Target: ");
+  lcd.print(targetDistanceCm);
+  lcd.print(" cm");
+  delay(1500);
+
+  driveTargetDistance(targetDistanceCm);
+}
+
+void loop() {
+  // Giữ kết quả trên LCD sau khi dừng
+}
+
+void driveTargetDistance(float distanceCm) {
+  unsigned long targetPulses = distanceCm * PULSES_PER_CM;
+
+  pulseCountL = 0;
+  pulseCountR = 0;
+
+  digitalWrite(Motor_L_dir_pin, Motor_forward);
+  digitalWrite(Motor_R_dir_pin, Motor_forward);
+
+  // Tính mức PWM đã bù cho bánh trái để chống rẽ phải
+  int leftPwm = (int)(baseSpeed * leftMotorFactor);
+  int rightPwm = baseSpeed;
+
+  // Bắt đầu cho 2 bánh chạy
+  analogWrite(Motor_L_pwm_pin, leftPwm);
+  analogWrite(Motor_R_pwm_pin, rightPwm);
+
+  // Vòng lặp kiểm tra liên tục không có delay làm trễ ngắt
+  while (true) {
+    // Lấy giá trị trung bình xung 2 bánh
+    unsigned long currentAvgPulses = (pulseCountL + pulseCountR) / 2;
+
+    // KIỂM TRA ĐIỀU KIỆN DỪNG NGAY LẬP TỨC
+    if (currentAvgPulses >= targetPulses) {
+      stopMotors(); // Ngắt điện ngay lập tức
+      break;
+    }
+  }
+
+  // Sau khi xe dừng hẳn mới in thông số lên LCD để tránh làm chậm ngắt
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("=== STOPPED ===");
+  lcd.setCursor(0, 1);
+  lcd.print("Target: "); lcd.print(distanceCm); lcd.print("cm");
+  lcd.setCursor(0, 2);
+  lcd.print("L: "); lcd.print(pulseCountL); 
+  lcd.print(" | R: "); lcd.print(pulseCountR);
+  lcd.setCursor(0, 3);
+  lcd.print("Target P: "); lcd.print(targetPulses);
+}
