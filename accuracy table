@@ -1,0 +1,167 @@
+#include <LiquidCrystal.h>
+
+// 1. LCD Configuration (RS, E, D4, D5, D6, D7)
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// 2. Motor Driver Pins
+#define Motor_forward    0
+#define Motor_return     1
+#define Motor_L_dir_pin  8
+#define Motor_R_dir_pin  7
+#define Motor_L_pwm_pin  10
+#define Motor_R_pwm_pin  9
+
+// 3. Encoder Pins
+const int encoderPinL = 2; // Left Encoder (Interrupt 0)
+const int encoderPinR = 3; // Right Encoder (Interrupt 1)
+
+// Interrupt Counters
+volatile unsigned long pulseCountL = 0;
+volatile unsigned long pulseCountR = 0;
+
+// =========================================================================
+//                   MANUAL HARDWARE TUNING PARAMETERS
+// =========================================================================
+// [FIX 1]: CALIBRATION CONSTANT
+// Change this number based on your physical floor testing (e.g., 13.20 or 13.97)
+const float PULSES_PER_CM = 13.46; 
+
+// [FIX 2]: TARGET DISTANCE (IN CM)
+// Set how far you want the robot to drive (e.g., 30.0, 100.0, 300.0)
+float targetDistanceCm = 180; 
+
+// [FIX 3]: BASELINE MOTOR SPEED (PWM 0 - 255)
+// Base speed applied to the motors
+const int baseSpeed = 150; 
+
+// [FIX 4]: MANUAL WHEEL POWER FACTORS (0.0 to 1.0)
+// Adjust these manually to make the car drive straight without automated code balancing:    //LEFT is currently stronger
+// - If car drifts RIGHT -> Left wheel is too fast -> Decrease leftPwmFactor (e.g., 0.90)
+// - If car drifts LEFT  -> Right wheel is too fast -> Decrease rightPwmFactor (e.g., 0.90)
+const float leftPwmFactor  = 1.00; // Multiply Left Motor power (e.g., 0.92 = 92% power)
+const float rightPwmFactor = 0.98; // Multiply Right Motor power (e.g., 1.00 = 100% power)
+
+// [FIX 5]: DRIVE DIRECTION
+// Set to Motor_forward (0) or Motor_return (1)
+const int driveDirection = Motor_return; 
+// =========================================================================
+
+// Interrupt Service Routines (ISRs)
+void ISR_countPulseL() { pulseCountL++; }
+void ISR_countPulseR() { pulseCountR++; }
+
+// Stop power to both motors immediately
+void stopMotors() {
+  analogWrite(Motor_L_pwm_pin, 0);
+  analogWrite(Motor_R_pwm_pin, 0);
+  digitalWrite(Motor_L_dir_pin, LOW);
+  digitalWrite(Motor_R_dir_pin, LOW);
+}
+
+void setup() {
+  lcd.begin(20, 4);
+
+  // Pin Modes Setup
+  pinMode(Motor_L_dir_pin, OUTPUT);
+  pinMode(Motor_R_dir_pin, OUTPUT);
+  pinMode(Motor_L_pwm_pin, OUTPUT);
+  pinMode(Motor_R_pwm_pin, OUTPUT);
+
+  pinMode(encoderPinL, INPUT_PULLUP);
+  pinMode(encoderPinR, INPUT_PULLUP);
+
+  // Attach Hardware Interrupts
+  attachInterrupt(digitalPinToInterrupt(encoderPinL), ISR_countPulseL, RISING);
+  attachInterrupt(digitalPinToInterrupt(encoderPinR), ISR_countPulseR, RISING);
+
+  // Start Driving Sequence
+  driveDistanceManual(targetDistanceCm, driveDirection);
+}
+
+void loop() {
+  // Keeps all final telemetry data static on the LCD after stopping
+}
+
+void driveDistanceManual(float distanceCm, int direction) {
+  // Calculate total pulses required to cover target distance
+  unsigned long targetPulses = distanceCm * PULSES_PER_CM;
+
+  // Reset counters before starting
+  pulseCountL = 0;
+  pulseCountR = 0;
+
+  // Set direction (Motor_forward or Motor_return)
+  digitalWrite(Motor_L_dir_pin, direction);
+  digitalWrite(Motor_R_dir_pin, direction);
+
+  // Calculate fixed PWM output based on your manual tuning factors
+  int finalLeftPwm  = (int)(baseSpeed * leftPwmFactor);
+  int finalRightPwm = (int)(baseSpeed * rightPwmFactor);
+
+  // Send power to motors
+  analogWrite(Motor_L_pwm_pin, finalLeftPwm);
+  analogWrite(Motor_R_pwm_pin, finalRightPwm);
+
+  // Continuous monitoring loop
+  while (true) {
+    // Calculate average pulses across both wheels
+    unsigned long currentAvgPulses = (pulseCountL + pulseCountR) / 2;
+
+    // Convert current pulse count back to actual driven distance (in cm)
+    float currentDistanceCm = currentAvgPulses / PULSES_PER_CM;
+
+    // Update real-time hardware telemetry on LCD
+    lcd.setCursor(0, 0);
+    lcd.print("Target: ");
+    lcd.print(distanceCm, 1);
+    lcd.print("cm      ");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Driven: ");
+    lcd.print(currentDistanceCm, 1);
+    lcd.print("cm      ");
+
+    lcd.setCursor(0, 2);
+    lcd.print("L: ");
+    lcd.print(pulseCountL);
+    lcd.print(" | R: ");
+    lcd.print(pulseCountR);
+    lcd.print("   ");
+
+    lcd.setCursor(0, 3);
+    lcd.print("P: ");
+    lcd.print(currentAvgPulses);
+    lcd.print("/");
+    lcd.print(targetPulses);
+    lcd.print("   ");
+
+    // STOP CONDITION: Cut power as soon as average pulses reach target threshold
+    if (currentAvgPulses >= targetPulses) {
+      stopMotors(); // Immediate hard stop
+      break;
+    }
+  }
+
+  // Display Final Arrival Screen on LCD
+  float finalDrivenCm = ((pulseCountL + pulseCountR) / 2.0) / PULSES_PER_CM;
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("=== FINISHED ===");
+  
+  lcd.setCursor(0, 1);
+  lcd.print("Target: ");
+  lcd.print(distanceCm, 1);
+  lcd.print("cm");
+
+  lcd.setCursor(0, 2);
+  lcd.print("Actual: ");
+  lcd.print(finalDrivenCm, 1);
+  lcd.print("cm");
+
+  lcd.setCursor(0, 3);
+  lcd.print("L:");
+  lcd.print(pulseCountL);
+  lcd.print(" R:");
+  lcd.print(pulseCountR);
+}
