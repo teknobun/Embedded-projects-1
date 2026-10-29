@@ -1,0 +1,419 @@
+#include <Wire.h>
+#include <LiquidCrystal.h>
+
+// ============================================================
+//  Exercise 5: drive a triangle using encoder pulses + compass
+//
+//  Route (heading H0 = whatever direction the car starts facing):
+//    Leg 1: drive 20 cm @ 75% speed, heading H0
+//    Turn : left 110 degrees          -> heading H0 - 110
+//    Leg 2: drive 13 cm @ 25% speed
+//    Turn : left 110 degrees          -> heading H0 - 220
+//    Leg 3: drive 20 cm @ 50% speed   -> back at the start position
+//    Turn : left 140 degrees          -> heading H0 again (ready for another run)
+//           (360 - 2 * 110 = 140, so the three left turns make one full rotation)
+//
+//  The compass is used to (a) remember H0, (b) know when a turn is
+//  finished, and (c) keep the car straight while driving a leg.
+//  The encoders are used to measure how far each leg has gone.
+// ============================================================
+
+// ---------- LCD (RS, E, D4, D5, D6, D7) ----------
+LiquidCrystal lcd(37, 36, 35, 34, 33, 32);
+
+// ---------- Compass ----------
+const byte CMPS14_ADDRESS = 0x60;  // I2C address of the compass
+const byte REG1_ADDRESS   = 0x01;  // register with the 8-bit bearing (0-255)
+const char* labels[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+
+// ---------- Motors ----------
+#define Motor_forward    0   // level on the direction pin = forward
+#define Motor_return     1   // level on the direction pin = backward
+#define Motor_L_dir_pin  8
+#define Motor_R_dir_pin  7
+#define Motor_L_pwm_pin  10
+#define Motor_R_pwm_pin  9
+
+const int MAX_PWM = 255;     // 100% speed
+
+// ---------- Joystick ----------
+const byte JOY_VRX = A8;     // not needed in this exercise
+const byte JOY_VRY = A9;     // not needed in this exercise
+const byte JOY_SW  = 19;     // push button (assumed active LOW)
+
+// ---------- Encoders (ASSUMED: CHECK YOUR WIRING) ----------
+// Must be interrupt-capable pins on the Mega: 2, 3, 18, 19, 20, 21.
+// 19 is already used by the joystick button, and 20/21 are the I2C pins.
+const byte ENC_L_PIN = 2;
+const byte ENC_R_PIN = 3;
+
+// ---------- Calibration values (CHANGE / TUNE THESE) ----------
+// Pulses per cm, calibrated on the floor with the 2 m accuracy test sketch.
+const float PULSES_PER_CM = 13.5;
+
+// Manual wheel balance (0.0 to 1.0), taken from the accuracy sketch.
+// Left motor is slightly stronger, so it gets a little less power.
+// Drifts RIGHT -> lower LEFT_PWM_FACTOR. Drifts LEFT -> lower RIGHT_PWM_FACTOR.
+const float LEFT_PWM_FACTOR  = 0.99;
+const float RIGHT_PWM_FACTOR = 1.00;
+
+// Pulses to stop EARLY at the end of each leg, to make up for the car
+// coasting after the motors are cut. Start at 0, run each leg on its own,
+// and if it consistently overshoots, raise it (1 pulse = 1/13.5 cm).
+const unsigned long LEG1_COAST_PULSES = 0;
+const unsigned long LEG2_COAST_PULSES = 0;
+const unsigned long LEG3_COAST_PULSES = 0;
+
+// ---------- Route definition (from the assignment) ----------
+const float LEG1_CM = 20.0;  const int LEG1_SPEED = 75;   // percent of max
+const float LEG2_CM = 13.0;  const int LEG2_SPEED = 25;
+const float LEG3_CM = 20.0;  const int LEG3_SPEED = 50;
+const float TURN_DEG = 110.0;                              // each left turn
+
+// ---------- Tuning ----------
+const int   TURN_PWM          = 200;   // spin speed for turns (130 was too weak)
+const int   TURN_PWM_SLOW     = 150;   // spin speed for the last part of a turn
+const float TURN_SLOW_ZONE    = 40.0;  // slow down when this many degrees remain
+const float TURN_STOP_MARGIN  = 5.0;   // stop this many degrees EARLY (car coasts)
+const unsigned long TURN_KICK_MS = 80; // full-power burst at the start of a turn
+const float KP_HEADING        = 3.0;   // compass steering gain on legs (PWM per degree). 0 = off
+// Slow legs (25% = PWM 63) can be too weak to get the car moving from standstill.
+// Below KICKSTART_BELOW_PWM, give the motors a short burst of KICKSTART_PWM first.
+const int   KICKSTART_BELOW_PWM = 100;
+const int   KICKSTART_PWM       = 180;
+const unsigned long KICKSTART_MS = 60;
+// Below this PWM the compass steering is switched off: slowing one wheel
+// further would stall it, and the leg is too short to drift much anyway.
+const int   MIN_STEER_PWM       = 100;
+// Legs have no total time limit either. Safety: give up only if the encoders
+// have not produced a single new pulse for LEG_STALL_MS (car not moving).
+const unsigned long LEG_STALL_MS   = 2500;
+// Turns run until the heading is reached (no fixed time limit). Safety: give up
+// only if the heading has not improved by TURN_STALL_DEG within TURN_STALL_MS.
+const unsigned long TURN_STALL_MS  = 4000;   // generous: front-wheel friction makes turns slow
+const float         TURN_STALL_DEG = 3.0;
+const bool RUN_ON_STARTUP = true;      // drive once at power-up, then on each button press
+
+// ---------- Encoder counting ----------
+// volatile: changed inside an interrupt, so the compiler must not cache it.
+volatile unsigned long encLeftCount  = 0;
+volatile unsigned long encRightCount = 0;
+
+void encLeftISR()  { encLeftCount++; }
+void encRightISR() { encRightCount++; }
+
+// Average of both wheels. Interrupts are paused while copying because
+// a 4-byte variable is read in several steps on an 8-bit AVR chip.
+unsigned long getPulses() {
+  noInterrupts();
+  unsigned long l = encLeftCount;
+  unsigned long r = encRightCount;
+  interrupts();
+  return (l + r) / 2;
+}
+
+void resetPulses() {
+  noInterrupts();
+  encLeftCount = 0;
+  encRightCount = 0;
+  interrupts();
+}
+
+// ---------- Helpers ----------
+
+// Print text on one LCD row, padded to 20 characters (no lcd.clear() flicker).
+void show(byte row, const char* text) {
+  char buf[21];
+  snprintf(buf, sizeof(buf), "%-20s", text);
+  lcd.setCursor(0, row);
+  lcd.print(buf);
+}
+
+// Wrap an angle into 0..360. Example: -110 becomes 250.
+float wrap360(float a) {
+  while (a < 0)    a += 360.0;
+  while (a >= 360) a -= 360.0;
+  return a;
+}
+
+// Wrap an angle into -180..180. Gives the SHORTEST way round a circle.
+// Example: heading 350, target 10 -> difference -20, not 340.
+float wrap180(float a) {
+  while (a > 180)   a -= 360.0;
+  while (a <= -180) a += 360.0;
+  return a;
+}
+
+// Read the compass as 0-360 degrees. Returns false if the read failed.
+bool readHeading(float &heading) {
+  Wire.beginTransmission(CMPS14_ADDRESS);
+  Wire.write(REG1_ADDRESS);
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom(CMPS14_ADDRESS, (byte)1) != 1) return false;
+
+  byte c = Wire.read();                 // raw 8-bit bearing, 0-255
+  heading = c * (360.0 / 256.0);        // 256 steps = 360 degrees
+  return true;
+}
+
+// Live compass display on row 3 (used while idle). Row 0 is kept for the
+// run status so "Aborted in ..." messages are not overwritten.
+void showHeading() {
+  float heading;
+  char line[21];
+  if (readHeading(heading)) {
+    snprintf(line, sizeof(line), "%d deg %s", (int)heading,
+             labels[((int)heading + 22) / 45 % 8]);
+    show(3, line);
+  } else {
+    show(3, "Compass error");
+  }
+}
+
+// Convert a percentage of max speed to a PWM value (75% -> 191).
+int percentToPwm(int percent) {
+  return (int)((long)MAX_PWM * percent / 100);
+}
+
+// Set both motors. dir is Motor_forward or Motor_return.
+void setMotors(int leftPwm, byte leftDir, int rightPwm, byte rightDir) {
+  digitalWrite(Motor_L_dir_pin, leftDir);
+  digitalWrite(Motor_R_dir_pin, rightDir);
+  analogWrite(Motor_L_pwm_pin, constrain(leftPwm, 0, MAX_PWM));
+  analogWrite(Motor_R_pwm_pin, constrain(rightPwm, 0, MAX_PWM));
+}
+
+void stopMotors() {
+  analogWrite(Motor_L_pwm_pin, 0);
+  analogWrite(Motor_R_pwm_pin, 0);
+}
+
+// ---------- Driving ----------
+
+// Drive straight for distanceCm at speedPercent, holding targetHeading.
+// coastPulses = how many pulses before the target to cut the motors.
+// Returns false only if the leg timed out (encoders not counting).
+bool driveLeg(float distanceCm, int speedPercent, float targetHeading,
+              unsigned long coastPulses) {
+  unsigned long targetPulses = (unsigned long)(distanceCm * PULSES_PER_CM);
+  if (targetPulses > coastPulses) targetPulses -= coastPulses;   // avoid underflow
+
+  int basePwm = percentToPwm(speedPercent);
+  int maxCorrection = basePwm / 4;           // never steer harder than this
+  resetPulses();
+
+  // Short burst to overcome standstill friction on slow legs
+  if (basePwm < KICKSTART_BELOW_PWM) {
+    setMotors((int)(KICKSTART_PWM * LEFT_PWM_FACTOR),  Motor_forward,
+              (int)(KICKSTART_PWM * RIGHT_PWM_FACTOR), Motor_forward);
+    delay(KICKSTART_MS);
+  }
+
+  unsigned long lastCount = getPulses();     // pulse count at last change
+  unsigned long lastChange = millis();       // when the count last changed
+
+  while (getPulses() < targetPulses) {
+    // Stall check: no new encoder pulse for LEG_STALL_MS = car is not moving
+    // (or an encoder is not counting).
+    unsigned long nowCount = getPulses();
+    if (nowCount != lastCount) {
+      lastCount = nowCount;
+      lastChange = millis();
+    }
+    if (millis() - lastChange > LEG_STALL_MS) {
+      stopMotors();
+      Serial.print("LEG STALLED, pulses: ");
+      Serial.println(nowCount);
+      return false;
+    }
+
+    // Compass trim on top of the manual wheel factors. If one read fails,
+    // just drive this iteration without a correction instead of aborting.
+    int correction = 0;
+    float heading;
+    if (basePwm >= MIN_STEER_PWM && readHeading(heading)) {
+      // Positive error = car has drifted clockwise (to the right) of the
+      // target, so slow the left wheel and speed up the right to steer left.
+      float error = wrap180(heading - targetHeading);
+      correction = constrain((int)(KP_HEADING * error), -maxCorrection, maxCorrection);
+    }
+
+    setMotors((int)((basePwm - correction) * LEFT_PWM_FACTOR),  Motor_forward,
+              (int)((basePwm + correction) * RIGHT_PWM_FACTOR), Motor_forward);
+  }
+
+  stopMotors();
+  Serial.print("Leg done, pulses: ");       // handy for calibration
+  Serial.println(getPulses());
+  delay(300);                                // let the car settle
+  return true;
+}
+
+// Spin on the spot to the left until the compass reaches targetHeading.
+// Left turn = compass heading DEcreases (compass counts clockwise).
+bool turnLeftTo(float targetHeading) {
+  unsigned long lastPrint = 0;
+  float bestRemaining = 1000.0;              // smallest "remaining" seen so far
+  unsigned long lastProgress = millis();     // when it last improved
+
+  // Full-power burst to break the wheels' grip on the floor, then the loop
+  // below takes over at TURN_PWM.
+  setMotors(MAX_PWM, Motor_return, MAX_PWM, Motor_forward);
+  delay(TURN_KICK_MS);
+
+  while (true) {
+    float heading;
+    if (!readHeading(heading)) {
+      stopMotors();
+      Serial.println("TURN: compass read failed");
+      return false;
+    }
+
+    // remaining > 0 : target is still to our left, keep turning
+    // remaining <= margin : close enough, stop (motors coast a bit more)
+    float remaining = wrap180(heading - targetHeading);
+    // Stall check: has the car got meaningfully closer to the target recently?
+    if (remaining < bestRemaining - TURN_STALL_DEG) {
+      bestRemaining = remaining;
+      lastProgress = millis();
+    }
+    if (millis() - lastProgress > TURN_STALL_MS) {
+      stopMotors();
+      Serial.println("TURN STALLED (no progress)");
+      return false;
+    }
+
+    if (millis() - lastPrint >= 100) {       // log the turn for debugging
+      lastPrint = millis();
+      Serial.print("turn heading=");
+      Serial.print(heading);
+      Serial.print(" remaining=");
+      Serial.println(remaining);
+    }
+    if (remaining <= TURN_STOP_MARGIN) break;
+
+    int pwm = (remaining < TURN_SLOW_ZONE) ? TURN_PWM_SLOW : TURN_PWM;
+
+    // Left wheel backwards + right wheel forwards = rotate left on the spot
+    setMotors(pwm, Motor_return, pwm, Motor_forward);
+  }
+
+  stopMotors();
+  delay(300);                                // let the car settle
+  return true;
+}
+
+// ---------- Whole route ----------
+void runRoute() {
+  float startHeading;
+
+  // Remember which way the car is facing; every target is relative to it.
+  // Try a few times in case one I2C read fails.
+  bool ok = false;
+  for (byte i = 0; i < 3 && !ok; i++) ok = readHeading(startHeading);
+  if (!ok) {
+    show(0, "Compass error");
+    return;
+  }
+
+  float heading2 = wrap360(startHeading - TURN_DEG);        // after turn 1
+  float heading3 = wrap360(startHeading - 2 * TURN_DEG);    // after turn 2
+
+  char line[21];
+  snprintf(line, sizeof(line), "Start: %d deg", (int)startHeading);
+  show(1, line);
+  show(2, "");
+  show(3, "");
+
+  show(0, "Leg 1: 20cm 75%");
+  if (!driveLeg(LEG1_CM, LEG1_SPEED, startHeading, LEG1_COAST_PULSES)) { show(0, "Aborted in leg 1"); return; }
+
+  show(0, "Turn 1: left 110");
+  snprintf(line, sizeof(line), "Target: %d deg", (int)heading2);
+  show(2, line);
+  if (!turnLeftTo(heading2)) { show(0, "Aborted in turn 1"); return; }
+
+  show(0, "Leg 2: 13cm 25%");
+  if (!driveLeg(LEG2_CM, LEG2_SPEED, heading2, LEG2_COAST_PULSES)) { show(0, "Aborted in leg 2"); return; }
+
+  show(0, "Turn 2: left 110");
+  snprintf(line, sizeof(line), "Target: %d deg", (int)heading3);
+  show(2, line);
+  if (!turnLeftTo(heading3)) { show(0, "Aborted in turn 2"); return; }
+
+  show(0, "Leg 3: 20cm 50%");
+  if (!driveLeg(LEG3_CM, LEG3_SPEED, heading3, LEG3_COAST_PULSES)) { show(0, "Aborted in leg 3"); return; }
+
+  // Final turn: rotate left back to the ORIGINAL heading so the car ends up
+  // exactly as it started. Turns left through 360 - 2*110 = 140 degrees.
+
+  /* return back to the start commented out
+  float finalTurn = 360.0 - 2 * TURN_DEG;
+  snprintf(line, sizeof(line), "Turn 3: left %d", (int)finalTurn);
+  show(0, line);
+  snprintf(line, sizeof(line), "Target: %d deg", (int)startHeading);
+  show(2, line);
+  if (!turnLeftTo(startHeading)) { show(0, "Aborted in turn 3"); return; }
+
+  */
+
+  // Calibration report: compare the final heading with the starting heading.
+  // err > 0: car stopped SHORT of the start heading (turned too little)
+  // err < 0: car OVERSHOT it (turned too much)
+  float endHeading;
+  if (readHeading(endHeading)) {
+    float err = wrap180(endHeading - startHeading);
+    snprintf(line, sizeof(line), "End:%d err%+d %s", (int)endHeading, (int)err,
+             (err > 0) ? "short" : "over");
+    show(2, line);
+    Serial.print("Start heading: ");
+    Serial.print(startHeading);
+    Serial.print("  End heading: ");
+    Serial.print(endHeading);
+    Serial.print("  Error (+short/-over): ");
+    Serial.println(err);
+  } else {
+    show(2, "");
+  }
+
+  show(0, "Done. Press button");
+}
+
+// ---------- Arduino entry points ----------
+void setup() {
+  lcd.begin(20, 4);
+  Wire.begin();
+  Serial.begin(9600);
+
+  pinMode(Motor_L_dir_pin, OUTPUT);
+  pinMode(Motor_R_dir_pin, OUTPUT);
+  pinMode(Motor_L_pwm_pin, OUTPUT);
+  pinMode(Motor_R_pwm_pin, OUTPUT);
+  stopMotors();
+
+  pinMode(JOY_SW, INPUT_PULLUP);        // button pulls the pin LOW when pressed
+  pinMode(ENC_L_PIN, INPUT_PULLUP);
+  pinMode(ENC_R_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_L_PIN), encLeftISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(ENC_R_PIN), encRightISR, RISING);
+
+  if (RUN_ON_STARTUP) {
+    show(0, "Starting in 2 s...");
+    delay(2000);                        // time to put the car down
+    runRoute();
+  }
+}
+
+void loop() {
+  if (digitalRead(JOY_SW) == LOW) {
+    delay(30);                          // debounce
+    if (digitalRead(JOY_SW) == LOW) {
+      runRoute();                       // one run per press
+      while (digitalRead(JOY_SW) == LOW) { }   // wait for release
+      delay(30);
+    }
+  } else {
+    showHeading();                      // idle: show live heading
+    delay(200);
+  }
+}
