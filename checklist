@@ -1,0 +1,25 @@
+General guidelines:
+[ ] Build quality: The car does not have any loose/hanging parts and does not fall over easily
+[ ] Wiring quality: The wiring is done neatly, there is next to no extra length on the wires, and they don’t protrude upwards in a chaotic manner
+[ ] Motor Calibration: The car moves in a straight line without noticeable drift towards right or left (test: drive 50 cm straight with 5 cm maximum drift to left/right)
+[ ] Encoder Control: The car drives the selected distance of 10 cm or 50 cm forwards and backwards using encoder feedback
+[ ] Mode Switching: The car can switch between joystick and ESP-controlled mode using a button
+Compass:
+[ ] Calibration and Accuracy: The initial compass reading is recorded and used to calculate the offset, which is then applied to future readings
+Joystick Control:
+[ ] Drive: The car can be driven with the joystick and the direction and speed change based on joystick movement
+Webpage Control:
+[ ] Distance Control: The car drives the selected direction and distance of 10 cm or 50 cm
+[ ] Compass-Based Turning: The car turns accurately when giving the commands from the webpage (within a ±5° tolerance) either CCW or CW
+[ ] Find North, South, West or East Buttons: The car rotates to face the correct direction when button on the webpage is pressed..
+[ ] Set Speed Text box: The car speed is set to value written to text box and validated before sending. An error is shown if needed..
+LCD Display:
+[ ] Mode: Displays the current mode (ESP/Joystick)
+[ ] Compass: For both modes, display compass degree and direction (N, NE, E…)
+[ ] Encoder: For both modes display pulse counts and distances (cm’s) traveled for both wheels
+[ ] Joystick values: Displays analog values for both joystick axes (only in joystick mode)
+[ ] ESP commands: Displays the latest command given from ESP (only in ESP mode)
+Error Handling:
+[ ] Error Handling: Implemented one of the options. Error is displayed on the LCD..
+Being late for groups presentation time:
+[ ] - 5p
